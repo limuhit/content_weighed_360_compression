@@ -1,1 +1,1 @@
-"# Content-Weighted-Pseudocylindrical-Representation-360-Compression" 
+Codes for "Learning Content-Weighted Pseudocylindrical Representation for 360-degree Image Compression"
