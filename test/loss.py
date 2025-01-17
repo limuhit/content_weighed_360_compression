@@ -344,8 +344,11 @@ class RateDistortionLossPConvTest(nn.Module):
         N, _, H, W = target.size()
         out = {}
         num_pixels = N * H * W
-        out["bpp_loss"] = ((torch.log(output["likelihoods"]["y"])*output["y_mask"]).sum() + torch.log(output["likelihoods"]["z"]).sum()) / (-math.log(2) * num_pixels)
-        
+        try:
+            out["bpp_loss"] = ((torch.log(output["likelihoods"]["y"])*output["y_mask"]).sum() + torch.log(output["likelihoods"]["z"]).sum()) / (-math.log(2) * num_pixels)
+        except:
+            print("here",output["likelihoods"]["y"])
+            out["bpp_loss"] = output["likelihoods"]["y"] + torch.log(output["likelihoods"]["z"]).sum() / (-math.log(2) * num_pixels)
         ps = pr_src(output["x_hat"])
         pt = pr_dst(target)
         
@@ -357,6 +360,24 @@ class RateDistortionLossPConvTest(nn.Module):
         else:
             return out[self.return_type]
         
+class CodingLoss(nn.Module):
+    """Custom rate distortion loss with a Lagrangian parameter."""
+
+    def __init__(self):
+        super().__init__()
+        self.metric_mse = PMSE()
+        self.metric_ssim = SSIM()
+
+    def forward(self, output, target, size_bits, pr_src, pr_dst):
+        
+        N, _, H, W = target.size()
+        out = {}
+        ps = pr_src(output)
+        pt = pr_dst(target)
+        out["ssim_loss"] = self.metric_ssim(ps, pt).item()
+        out["mse_loss"] = self.metric_mse(ps, pt).item()
+        out["bpp_loss"] = float(size_bits) / (N*H*W)
+        return out
         
 class RateDistortionLossTest(nn.Module):
     """Custom rate distortion loss with a Lagrangian parameter."""

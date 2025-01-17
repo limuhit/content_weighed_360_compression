@@ -3,10 +3,13 @@ import torch.nn as nn
 from compressai.layers import MaskedConv2d
 from model_zoo_v2 import Cheng2020Anchor
 from PCONV2_operator import SphereSlice,SphereUslice,PseudoContextV2,PseudoFillV2,PseudoEntropyContext,PseudoEntropyPad
+from PCONV2_operator import GaussianTable
 from layers import ResidualBlockWithStride, ResidualBlock
 from PCONV2_operator.BaseOpModule import BaseOpModule
 import PCONV2
 import numpy as np
+import coder
+import os
 
 from layersPC import (
     AttentionBlock_PCONV,
@@ -191,8 +194,8 @@ class ParamHead(nn.Module):
     def forward(self,fp):
         self.cast_raw(fp)
         n,c,h,w = fp.size()
-        fp = fp.view(n,c,self.npart,h//self.npart,w).permute(0,2,1,3,4).contiguous().view(n*self.npart,-1)
-        tp = self.pool(fp)
+        fp = fp.view(n,c,self.npart,h//self.npart,w).permute(0,2,1,3,4).contiguous().view(n*self.npart,1,-1)
+        tp = self.pool(fp).view(n*self.npart,-1)
         #param = self.head(tp).view(n*self.npart) + self.base
         #param = self.clip(param)
         param = torch.sigmoid(self.head(tp).view(n*self.npart))*64 + 0.5
@@ -275,13 +278,27 @@ class Cheng2020AttentionPConvV2(Cheng2020Anchor):
         )
         self.context_pad = PseudoEntropyPad(2,npart,self.ctx_ent,device=device_id)
         self.param_loss = ParamLoss(gamma,eta)
-        
+        self.coding_bias,self.coding_range = 76,160
+        self.wt_table = torch.Tensor([0, 1, 2, 22, 165, 349, 799, 1188, 1659, 2171, 2764, 3214, 3664, 
+                                      4216, 4707, 5239, 5771, 6201, 6672, 7163, 7470, 7859, 8268, 8677, 
+                                      9045, 9475, 9946, 10212, 10621, 10846, 11214, 11582, 11889, 12114, 
+                                      12359, 12768, 13034, 13300, 13525, 13873, 14118, 14404, 14547, 14751, 
+                                      14996, 15221, 15364, 15671, 15916, 16161, 16365, 16672, 16958, 17162,
+                                      17448, 17693, 17959, 18327, 18490, 18940, 19267, 19615, 20086, 20823, 65510]).type(torch.int32)
+        self.print_const_table()
+        self.device = None
 
+    def print_const_table(self):
+        ncount = 512
+        total = 65536
+        part = total // ncount
+        ptable = [i*part for i in range(ncount+1)]
+        table = torch.Tensor(ptable).type(torch.int32).contiguous()
+        self.const_table = table.view(1,-1).repeat(2,1)
         
     def forward(self,x):
         n,_,_,w = x.shape
         pw = self.param_net(x)
-        
         self.ctx.setup_context(n,w,pw)
         self.ctx_ent.setup_context(n,w,pw)
         tx = self.slice(x,pw)
@@ -295,6 +312,7 @@ class Cheng2020AttentionPConvV2(Cheng2020Anchor):
         
         py_hat = self.context_pad(y_hat)
         ctx_params = self.context_prediction(py_hat)
+        
         ty = self.uslice_code(y.contiguous(),pw)
         z = self.h_a(ty)
         z_hat, z_likelihoods = self.entropy_bottleneck(z)
@@ -304,7 +322,7 @@ class Cheng2020AttentionPConvV2(Cheng2020Anchor):
             torch.cat((tparams, ctx_params), dim=1)
         )
         scales_hat, means_hat = gaussian_params.chunk(2, 1)
-        _, y_likelihoods = self.gaussian_conditional(y, scales_hat, means=means_hat)
+        #y_hat2, y_likelihoods = self.gaussian_conditional(y, scales_hat, means=means_hat)
         x_hat = self.g_s(y_hat)
         tx_hat = self.uslice(x_hat,pw)
         
@@ -316,6 +334,153 @@ class Cheng2020AttentionPConvV2(Cheng2020Anchor):
             'data':tx,
             'tx':x_hat
         }
+    
+    
+    @torch.no_grad()
+    def encoding(self,x,code_file='data'):
+        self.device = x.device
+        mcoder = coder.coder(code_file)
+        mcoder.start_encoder()
+        n,_,_,w = x.shape
+        pw = self.param_net(x)
+        pw = torch.round(pw).type(torch.float32)
+        tlabel = (pw - 1).contiguous().type(torch.int32).to('cpu')
+        pred = self.wt_table.view(1,-1).repeat(pw.shape[0],1).contiguous()
+        mcoder.encodes(pred,64,tlabel,pw.shape[0])
+        self.ctx.setup_context(n,w,pw)
+        self.ctx_ent.setup_context(n,w,pw)
+        tx = self.slice(x,pw)
+        raw_y = self.g_a(tx)
+        code_mask = torch.ones_like(raw_y).detach()
+        self.trim(code_mask) 
+        y = self.param_loss(pw,raw_y,code_mask)
+        ty = self.uslice_code(y.contiguous(),pw)
+        z = self.h_a(ty)
+        
+        ########### determine coding range for y and coding it ###########
+        ry_hat = self.gaussian_conditional.quantize(y, "dequantize")
+        rpy_hat = self.context_pad(ry_hat)
+        ctx_params = self.context_prediction(rpy_hat)
+        rty = self.uslice_code(y.contiguous(),pw)
+        rz = self.h_a(rty)
+        rz_hat, _ = self.entropy_bottleneck(z)
+        rparams = self.h_s(rz_hat).contiguous()
+        rtparams = self.slice_code(rparams,pw)
+        gaussian_params = self.entropy_parameters(
+            torch.cat((rtparams, ctx_params), dim=1)
+        )
+        _, means_hat = gaussian_params.chunk(2, 1)
+        idxs = torch.round(y-means_hat).int()
+        idxs_min, idxs_max = idxs.min().item()-10,idxs.max().item()+10
+        coding_bias,coding_range = -idxs_min, idxs_max-idxs_min+1
+        tlabel = torch.Tensor([coding_bias,coding_range]).type(torch.int32).contiguous()
+        mcoder.encodes(self.const_table,512,tlabel,2)
+        
+        
+        self.entropy_bottleneck.update()
+        z_hat = torch.zeros_like(z)
+        medians = self.entropy_bottleneck._get_medians().detach()
+        _,zc,zh,zw = z.shape
+        for tc in range(zc):
+            rag = self.entropy_bottleneck.cdf_length[tc]
+            tb = self.entropy_bottleneck.quantized_cdf[tc][:rag].view(1,-1).repeat(zh*zw,1).contiguous()
+            idx =  torch.round(z[0,tc]-medians[tc])
+            idx = idx - self.entropy_bottleneck.offset[tc]
+            pred,tlabel = tb.contiguous().type(torch.int32).to('cpu'), idx.view(-1).contiguous().type(torch.int32).to('cpu')
+            mcoder.encodes(pred,rag-1,tlabel,zh*zw)
+            z_hhat = idx + self.entropy_bottleneck.offset[tc] + medians[tc]
+            z_hat[0,tc] += z_hhat
+        params = self.h_s(z_hat).contiguous()
+        tparams = self.slice_code(params,pw)
+        gt = GaussianTable(coding_range,y.shape[1],coding_bias,65536.,1e-6)
+        fake_y_hat = torch.zeros_like(y)
+        padded = self.context_pad(fake_y_hat)
+        fake_py = torch.zeros_like(padded)
+        tn,tc,th,tw = y.shape
+        ept = torch.zeros((1,1,1,tc),dtype=torch.float32).to(self.device)
+        for pg in range(tn):
+            if pg>0:
+                padded = self.context_pad(fake_y_hat)
+                fake_py[pg:pg+1] = padded[pg:pg+1]
+            for ph in range(th):
+                for pww in range(tw):
+                    if code_mask[pg,0,ph,pww] < 0.5:break
+                    tmp = self.context_prediction(fake_py[pg:pg+1,:,ph:ph+5,pww:pww+5])
+                    combined_ft = torch.cat((tparams[pg:pg+1,:,ph:ph+1,pww:pww+1], tmp), dim=1)
+                    gparam = self.entropy_parameters(combined_ft)
+                    scales_hat, means_hat = gparam[0,:tc,0,0], gparam[0,tc:,0,0]
+                    y_hhat = torch.round(y[pg,:,ph,pww]-means_hat)# + means_hat
+                    idxs = y_hhat.int() + coding_bias
+                    ept = torch.zeros_like(means_hat).view(1,1,1,tc)
+                    tbs = gt(scales_hat.view(1,1,1,tc), ept)
+                    pred,tlabel = tbs.contiguous().type(torch.int32).to('cpu'), idxs.contiguous().type(torch.int32).to('cpu')
+                    mcoder.encodes(pred,coding_range,tlabel,tc)
+                    y_hhat = idxs - coding_bias + means_hat
+                    fake_py[pg,:,ph+2,pww+2] = y_hhat
+                if pww==tw-1: pww+=1
+                fake_py[pg:pg+1,:,ph+2,pww+2:pww+4] = fake_py[pg:pg+1,:,ph+2,2:4]
+            fake_y_hat[pg:pg+1,:] = fake_py[pg:pg+1,:,2:2+th,2:2+tw]
+        nbits = os.path.getsize(code_file)*8.
+        #print(nbits/512/1024)
+        mcoder.end_encoder()
+        return nbits
+    
+    @torch.no_grad()
+    def decoding(self, w=1024, code_channels=192, n=16, code_file='data'):
+        assert not self.device is None, "Initialize the cuda device for the codec before decoding"
+        mcoder = coder.coder(code_file)
+        mcoder.start_decoder()
+        pred = self.wt_table.view(1,-1).repeat(n,1).contiguous()
+        pw = mcoder.decodes(pred,64,n).to(self.device) + 1
+        labels = mcoder.decodes(self.const_table,512,2)
+        coding_bias,coding_range = labels[0],labels[1]
+        self.ctx.setup_context(n,w,pw)
+        self.ctx_ent.setup_context(n,w,pw)
+        code_mask = torch.ones((n,code_channels,w//(32*n),w//16),dtype=torch.float32).to(self.device)
+        self.trim(code_mask) 
+        self.entropy_bottleneck.update()
+        z_hat = torch.zeros((1,code_channels,w//128,w//64),dtype=torch.float32).to(self.device)
+        medians = self.entropy_bottleneck._get_medians().detach()
+        zh,zw = z_hat.shape[2:]
+        for tc in range(code_channels):
+            rag = self.entropy_bottleneck.cdf_length[tc]
+            tb = self.entropy_bottleneck.quantized_cdf[tc][:rag].view(1,-1).repeat(zh*zw,1).contiguous()
+            pred = tb.contiguous().type(torch.int32).to('cpu')
+            tlabel = mcoder.decodes(pred,rag-1,zh*zw).to(self.device).contiguous().int().view(zh,zw)
+            z_hhat = tlabel + self.entropy_bottleneck.offset[tc] + medians[tc]
+            z_hat[0,tc] += z_hhat
+        params = self.h_s(z_hat).contiguous()
+        tparams = self.slice_code(params,pw)
+        gt = GaussianTable(coding_range,code_channels,coding_bias,65536.,1e-6)
+        fake_y_hat = torch.zeros_like(code_mask)
+        padded = self.context_pad(fake_y_hat)
+        fake_py = torch.zeros_like(padded)
+        tn,tc,th,tw = code_mask.shape
+        ept = torch.zeros((1,1,1,code_channels),dtype=torch.float32).to(self.device)
+        for pg in range(tn):
+            if pg>0:
+                padded = self.context_pad(fake_y_hat)
+                fake_py[pg:pg+1] = padded[pg:pg+1]
+            for ph in range(th):
+                for pww in range(tw):
+                    if code_mask[pg,0,ph,pww] < 0.5:break
+                    tmp = self.context_prediction(fake_py[pg:pg+1,:,ph:ph+5,pww:pww+5])
+                    combined_ft = torch.cat((tparams[pg:pg+1,:,ph:ph+1,pww:pww+1], tmp), dim=1)
+                    gparam = self.entropy_parameters(combined_ft)
+                    scales_hat, means_hat = gparam[0,:tc,0,0], gparam[0,tc:,0,0]
+                    tbs = gt(scales_hat.view(1,1,1,code_channels), ept)
+                    pred = tbs.contiguous().type(torch.int32).to('cpu')
+                    tlabel = mcoder.decodes(pred,coding_range,code_channels).to(self.device).contiguous().int()
+                    y_hhat = tlabel - coding_bias + means_hat
+                    fake_py[pg,:,ph+2,pww+2] = y_hhat#y_hat[pg:pg+1,:,ph,pww]
+                if pww==tw-1: pww+=1
+                fake_py[pg:pg+1,:,ph+2,pww+2:pww+4] =  fake_py[pg:pg+1,:,ph+2,2:4]
+            fake_y_hat[pg:pg+1,:] = fake_py[pg:pg+1,:,2:2+th,2:2+tw]
+        
+        x_hat = self.g_s(fake_y_hat.contiguous())
+        tx_hat = self.uslice(x_hat,pw)
+        
+        return tx_hat
 
 class Cheng2020AttentionPConvV2P(nn.Module):
     
@@ -550,7 +715,7 @@ def cast_param(state_dict):
 def test_model():
     from loss import RateDistortionLossPConv
     from PCONV2_operator import  MultiProject
-    data = torch.rand((1,3,512,1024),dtype=torch.float32,device='cuda:0')
+    data = torch.rand((1,3,512,1024),dtype=torch.float32,device=self.device)
     model = Cheng2020AttentionPConvV2(device_id=0).to('cuda:0')
     viewport_size = 171
     pr1 = MultiProject(viewport_size, int(viewport_size*1.5), 0.5, False, 0).to('cuda:0')

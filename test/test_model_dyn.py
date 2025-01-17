@@ -5,13 +5,13 @@ import argparse
 import sys
 import torch
 from SphereDataset import load_test_dataset
-from loss import RateDistortionLossPConvTest
+from loss import RateDistortionLossPConvTest,CodingLoss
 from PCONV2_operator import  MultiProject
 from model_zoo_v3 import Cheng2020AttentionPConvV2, Cheng2020AttentionPConvV2L2
 import numpy as np
 import cv2
 
-root = 'G:/Jobs/test'
+root = '.'
 
 
 class AverageMeter:
@@ -64,7 +64,7 @@ def test_epoch_detail(epoch, test_dataloader, model, criterion,pr_scr,pr_dst,log
     with torch.no_grad():
         for tidx,d in enumerate(test_dataloader):
             d = d.to(device)
-            out_net = model(d)
+            out_net = model(d)#.forward_test(d)#
             out_criterion = criterion(out_net, d, pr_scr, pr_dst)
             print(f'{out_criterion["mse_loss"]:.8f},{out_criterion["ssim_loss"]:.5f},{out_criterion["bpp_loss"]:.5f}', file=log, flush=True)
             weight = out_net['weight']
@@ -81,13 +81,29 @@ def test_epoch_detail(epoch, test_dataloader, model, criterion,pr_scr,pr_dst,log
     
     return None
 
+def test_epoch_coding(epoch, test_dataloader, model, pr_scr,pr_dst,log,logw,args):
+    model.eval()
+    device = next(model.parameters()).device
+    criterion = CodingLoss()
+    with torch.no_grad():
+        for tidx,d in enumerate(test_dataloader):
+            #if tidx<45:continue
+            d = d.to(device)
+            bits = model.encoding(d)
+            tx = model.decoding()
+            out_criterion = criterion(tx,d, bits, pr_scr,pr_dst)
+            print(f'{out_criterion["mse_loss"]:.8f},{out_criterion["ssim_loss"]:.5f},{out_criterion["bpp_loss"]:.5f}', file=log, flush=True)
+            
+            #exit()
+    return None
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(description="Example training script.")
     parser.add_argument('--gpu-id', type=int, default=0, metavar='CudaId', help='The graphic card id for training')
     parser.add_argument('--test-batch-size', type=int, default=1, metavar='N',
                         help='input batch size for testing (default: 1000)')
     parser.add_argument("--checkpoint", default="dyn_mse/dyn_v3_4_best.pth.tar",type=str, help="Path to a checkpoint")
-    parser.add_argument("--log", default="test.log",type=str, help="Path to a output file")
+    parser.add_argument("--log", default="test3.log",type=str, help="Path to a output file")
     parser.add_argument('--viewport_size', type=int, default = 171, metavar='viewport', 
                         help='viewport size for 360 projection.')
     args = parser.parse_args(argv)
@@ -141,10 +157,38 @@ def Job(args):
     args.img_dir = f'{root}/save_models/imgs'
     os.makedirs(args.img_dir,exist_ok=True)
     test_epoch_detail(0, test_dataloader, model_pconv, creiterion_pconv,pr1,pr2,log,logw,args)
+    #test_epoch_coding(0, test_dataloader, model_pconv, pr1,pr2,log,logw,args)
     
 def main(argv):
     args = parse_args(argv)
     Job(args)
+
+
+def count_and_build_table():
+    ncounts = [0 for _ in range(64)]
+    with open('./save_models/test.log.wt','r') as f:
+        lines = f.readlines()
+        for ln in lines:
+            wt = [int(pa) for pa in ln[:-1].split(',')]
+            for v in wt: ncounts[v-1] += 1
+    total = float(sum(ncounts))
+    p = [num / total for num in ncounts]
+    p_table = [0 for _ in range(65)]
+    for i in range(64):
+        pv = int(p[i]*65536) 
+        pv = 1 if pv < 1 else pv
+        p_table[i+1] = p_table[i] + pv
+    print(p_table)
+    
+def print_const_table():
+    ncount = 512
+    total = 65536
+    part = total // ncount
+    ptable = [i*part for i in range(ncount+1)]
+    print(ptable)
+    
     
 if __name__ == "__main__":
     main(sys.argv[1:])
+    #count_and_build_table()
+    #print_const_table()
