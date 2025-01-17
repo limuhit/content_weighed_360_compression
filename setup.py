@@ -4,7 +4,7 @@ import torch
 
 from setuptools import setup, find_packages
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-			
+#cxx_args = ['-std=c++14', '-DOK']			
 cxx_args = ['-std=c++17']
 nvcc_args = [
 	'-D__CUDA_NO_HALF_OPERATORS__',
@@ -34,7 +34,8 @@ setup(
    			'./extension/pseudo_merge_cuda.cu',
 			'./extension/pseudo_split_cuda.cu',
 			'./extension/entropy_context_cuda.cu',
-            './extension/acc_grad_cuda.cu'
+            './extension/acc_grad_cuda.cu',
+            './extension/gaussian_table_cuda.cu'
         ],
         include_dirs=['./extension'], 
         extra_compile_args={'cxx': cxx_args, 'nvcc': nvcc_args}, 

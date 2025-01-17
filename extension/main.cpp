@@ -75,4 +75,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def(py::init<int, bool>())
         .def("to", &acc_grad_opt::to)
         .def("apply", &acc_grad_opt::forward_cuda);
+
+    py::class_<gaussian_table_opt>(m,"GaussianTableOp")
+        .def(py::init< int, int, float, float, float, int, bool>())
+        .def("to", &gaussian_table_opt::to)
+        .def("forward", &gaussian_table_opt::forward_cuda)
+        .def("set", &gaussian_table_opt::set_param);
 };

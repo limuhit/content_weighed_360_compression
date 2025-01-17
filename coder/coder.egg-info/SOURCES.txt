@@ -1,0 +1,8 @@
+ArithmeticCoder.cpp
+BitIoStream.cpp
+python.cpp
+setup.py
+coder.egg-info/PKG-INFO
+coder.egg-info/SOURCES.txt
+coder.egg-info/dependency_links.txt
+coder.egg-info/top_level.txt

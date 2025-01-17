@@ -10,3 +10,4 @@
 #include "pseudo_split.hpp"
 #include "entropy_context.hpp"
 #include "acc_grad.hpp"
+#include "gaussian_table.hpp"

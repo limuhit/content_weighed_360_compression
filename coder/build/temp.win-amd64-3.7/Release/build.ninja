@@ -1,0 +1,21 @@
+ninja_required_version = 1.3
+cxx = cl
+
+cflags = /nologo /Ox /W3 /GL /DNDEBUG /MD /MD /wd4819 /wd4251 /wd4244 /wd4267 /wd4275 /wd4018 /wd4190 /EHsc -IE:\software\Anaconda3\lib\site-packages\torch\include -IE:\software\Anaconda3\lib\site-packages\torch\include\torch\csrc\api\include -IE:\software\Anaconda3\lib\site-packages\torch\include\TH -IE:\software\Anaconda3\lib\site-packages\torch\include\THC -IE:\software\Anaconda3\include -IE:\software\Anaconda3\include "-Id:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Tools\MSVC\14.29.30133\include" "-IC:\Program Files (x86)\Windows Kits\NETFXSDK\4.6.1\include\um" "-ID:\Windows Kits\10\include\10.0.19041.0\ucrt" "-ID:\Windows Kits\10\include\10.0.19041.0\shared" "-ID:\Windows Kits\10\include\10.0.19041.0\um" "-ID:\Windows Kits\10\include\10.0.19041.0\winrt" "-ID:\Windows Kits\10\include\10.0.19041.0\cppwinrt"
+post_cflags = -DTORCH_API_INCLUDE_EXTENSION_H -DTORCH_EXTENSION_NAME=coder -D_GLIBCXX_USE_CXX11_ABI=0 /std:c++14
+ldflags = 
+
+rule compile
+  command = cl /showIncludes $cflags -c $in /Fo$out $post_cflags
+  deps = msvc
+
+
+
+build G$:\Jobs\coder\build\temp.win-amd64-3.7\Release\python.obj: compile G$:\Jobs\coder\python.cpp
+build G$:\Jobs\coder\build\temp.win-amd64-3.7\Release\BitIoStream.obj: compile G$:\Jobs\coder\BitIoStream.cpp
+build G$:\Jobs\coder\build\temp.win-amd64-3.7\Release\ArithmeticCoder.obj: compile G$:\Jobs\coder\ArithmeticCoder.cpp
+
+
+
+
+

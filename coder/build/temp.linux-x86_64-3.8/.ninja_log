@@ -1,0 +1,9 @@
+# ninja log v5
+1	505	1622799126259807430	/home/csmuli/CCN/coder/build/temp.linux-x86_64-3.8/ArithmeticCoder.o	b51931e7a7d7491a
+1	569	1622799126323807632	/home/csmuli/CCN/coder/build/temp.linux-x86_64-3.8/BitIoStream.o	6a380e5eaedf508d
+0	30333	1622799156071899520	/home/csmuli/CCN/coder/build/temp.linux-x86_64-3.8/python.o	82e2eac8fb3f2282
+4	36896	1622801965326991352	/home/csmuli/CCN/coder/build/temp.linux-x86_64-3.8/python.o	82e2eac8fb3f2282
+3	40654	1622802221443684358	/home/csmuli/CCN/coder/build/temp.linux-x86_64-3.8/python.o	82e2eac8fb3f2282
+6	44899	1622802482836504339	/home/csmuli/CCN/coder/build/temp.linux-x86_64-3.8/python.o	82e2eac8fb3f2282
+6	45816	1622802877881393593	/home/csmuli/CCN/coder/build/temp.linux-x86_64-3.8/python.o	82e2eac8fb3f2282
+2	48807	1622803275483315677	/home/csmuli/CCN/coder/build/temp.linux-x86_64-3.8/python.o	82e2eac8fb3f2282
